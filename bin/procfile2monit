@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+import os
+import pwd
+import sys
+import argparse
+from pathlib import Path
+
+def parse_procfile(procfile):
+    with open(procfile, 'r') as file:
+        lines = file.readlines()
+    return [line.strip().split(': ', 1) for line in lines if line.strip()]
+
+
+def generate_monit_config(procfile_path, monit_dir, user):
+    if os.geteuid() != 0:
+        exit("You need to have root privileges to run this script.\nPlease try again, this time using 'sudo'. Exiting.")
+    
+    home_dir = os.path.expanduser(f'~{user}')
+    uid = pwd.getpwnam(user).pw_uid
+    gid = pwd.getpwnam(user).pw_gid
+    procfile_dir = Path(procfile_path).resolve().parent  # Get the procfile path
+    procfile_dir_name = Path(procfile_path).resolve().parent.name  # Get the directory name of the procfile path
+    commands = parse_procfile(procfile_path)
+    for name, command in commands:
+        # Wrap the command in bash -c, write its PID to a file, and redirect its output to a log file
+        wrapped_command = f"/bin/bash -c 'cd {procfile_dir}; {command} > {home_dir}/{procfile_dir_name}_{name}.log 2>&1 & echo $! > {home_dir}/{procfile_dir_name}_{name}.pid'"
+        content = f"""
+check process {procfile_dir_name}_{name} with pidfile {home_dir}/{procfile_dir_name}_{name}.pid
+    start program = "{wrapped_command}" as uid {uid} and gid {gid} with timeout 60 seconds
+    stop program  = "/bin/kill $(cat {home_dir}/{procfile_dir_name}_{name}.pid)" as uid {uid} and gid {gid}
+    if 5 restarts within 5 cycles then timeout
+"""
+        with open(os.path.join(monit_dir, f'{procfile_dir_name}_{name}.monitrc'), 'w') as file:
+            file.write(content)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate monit config files from a Procfile.")
+    parser.add_argument('procfile', type=str, help='Path to the Procfile')
+    parser.add_argument('monit_dir', type=str, help='Directory where monit config files will be written')
+    parser.add_argument('user', type=str, help='User who will run the commands')
+
+    args = parser.parse_args()
+
+    generate_monit_config(args.procfile, args.monit_dir, args.user)
+
+
+if __name__ == "__main__":
+    main()
